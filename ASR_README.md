@@ -82,3 +82,95 @@ asr_model = nemo_asr.models.ASRModel.from_pretrained("DigitalUmuganda/Mbaza-ASR-
 asr_model.transcribe(['<audio_file_path>'])
 
 ```
+
+## Emformer streaming model
+```
+import sentencepiece as spm
+import torch
+from typing import List
+from torchaudio.io import StreamReader
+
+
+def post_process_hypos(tokens: List[int]) -> str:
+
+    hypotheses = [x for x in tokens if x > 0 and x < 128]
+    pred_texts = sp.decode(hypotheses)
+
+    return pred_texts
+
+bundle = torch.jit.load("scripted_wrapper.pt")
+tokenizer_model_path=""
+sp = spm.SentencePieceProcessor(model_file=tokenizer_model_path)
+```
+#### Non-streaming predictions
+```
+tokens = bundle.predict(input_tensor)[0]
+pred_text = post_process_hypos(tokens)
+
+```
+#### Streaming prediction section
+```
+class ContextCacher:
+    """Cache the end of input data and prepend the next input data with it.
+
+    Args:
+        segment_length (int): The size of main segment.
+            If the incoming segment is shorter, then the segment is padded.
+        context_length (int): The size of the context, cached and appended.
+    """
+
+    def __init__(self, segment_length: int, context_length: int):
+        self.segment_length = segment_length
+        self.context_length = context_length
+        self.context = torch.zeros([context_length])
+
+    def __call__(self, chunk: torch.Tensor):
+        if chunk.size(0) < self.segment_length:
+            chunk = torch.nn.functional.pad(chunk, (0, self.segment_length - chunk.size(0)))
+        chunk_with_context = torch.cat((self.context, chunk))
+        self.context = chunk[-self.context_length :]
+        return chunk_with_context
+
+
+
+hop_length=160
+segment_length=16
+right_context_length=4
+
+sample_rate = 16000
+segment_length = segment_length * hop_length
+context_length = right_context_length * hop_length
+
+print(f"Sample rate: {sample_rate}")
+print(f"Main segment: {segment_length} frames ({segment_length / sample_rate} seconds)")
+print(f"Right context: {context_length} frames ({context_length / sample_rate} seconds)")
+src = "https://www.laits.utexas.edu/phonology/sounds/MP3/142b.mp3"
+
+streamer = StreamReader(src)
+streamer.add_basic_audio_stream(frames_per_chunk=segment_length, sample_rate=sample_rate)
+
+cacher = ContextCacher(segment_length, context_length)
+
+state, hypothesis = None, None
+
+stream_iterator = streamer.stream()
+
+
+@torch.inference_mode()
+def run_inference(num_iter=100):
+    global state, hypothesis
+    chunks = []
+    feats = []
+    # print("stream_iterator.length: ",len(list(stream_iterator)))
+    for i, (chunk,) in enumerate(stream_iterator, start=1):
+        first = (state is None)
+        # print("chunk.shape: ",chunk.shape)
+        segment = cacher(chunk[:, 0])
+
+        hypos, state = wrapper.stream(segment, state, hypothesis)
+
+        hypothesis = hypos
+
+        print('Hypos:', post_process_hypos(hypos[0][0]), flush=True)
+
+```
