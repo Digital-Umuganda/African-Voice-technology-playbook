@@ -98,8 +98,8 @@ def post_process_hypos(tokens: List[int]) -> str:
 
     return pred_texts
 
-bundle = torch.jit.load("scripted_wrapper.pt")
-tokenizer_model_path=""
+bundle = torch.jit.load("scripted_bundle.pt")
+tokenizer_model_path="tokenizer.model"
 sp = spm.SentencePieceProcessor(model_file=tokenizer_model_path)
 ```
 #### Non-streaming predictions
@@ -164,13 +164,11 @@ def run_inference(num_iter=100):
     # print("stream_iterator.length: ",len(list(stream_iterator)))
     for i, (chunk,) in enumerate(stream_iterator, start=1):
         first = (state is None)
-        # print("chunk.shape: ",chunk.shape)
         segment = cacher(chunk[:, 0])
 
-        hypos, state = wrapper.stream(segment, state, hypothesis)
+        hypothesis, state = bundle.stream(segment, state, hypothesis)
 
-        hypothesis = hypos
 
-        print('Hypos:', post_process_hypos(hypos[0][0]), flush=True)
+        print(post_process_hypos(hypothesis[0][0]), flush=True)
 
 ```
